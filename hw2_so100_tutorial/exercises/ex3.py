@@ -21,7 +21,8 @@ def reset_robot(default_qpos: np.ndarray) -> None:
     Returns:
     - reset_qpos: np.ndarray. The joint positions to reset the robot to. Dimensionality: 1D array, Shape: (num_joints,).
     """
-    raise NotImplementedError()
+    noise = np.random.uniform(-0.05, 0.05, size=default_qpos.shape)  # small noise per doc
+    return default_qpos + noise
     
 
 
@@ -39,7 +40,12 @@ def reset_target_position(base_pos: np.ndarray) -> None:
     Returns:
     - target_pos: np.ndarray. The 3D position of the target relative to the base. Dimensionality: 1D array, Shape: (3,).
     """
-    raise NotImplementedError()
+    target_rel = np.array([
+        np.random.uniform(0.2, 0.4),
+        np.random.uniform(-0.2, 0.2),
+        np.random.uniform(0.1, 0.4),
+    ])
+    return base_pos + target_rel
 
 
 def process_action(action: np.ndarray, jnt_range: np.ndarray) -> np.ndarray:
@@ -57,7 +63,12 @@ def process_action(action: np.ndarray, jnt_range: np.ndarray) -> np.ndarray:
     Returns:
     - target_qpos: np.ndarray. Target joint positions to apply as control. Dimensionality: 1D array, Shape: (num_joints,).
     """
-    raise NotImplementedError()
+    low = jnt_range[:, 0]
+    high = jnt_range[:, 1]
+    midpoint = (low + high) / 2
+    half_range = (high - low) / 2
+    target_qpos = midpoint + action * half_range
+    return np.clip(target_qpos, low, high) #clip just to be safe
 
 
 def compute_reward(ee_tracking_error: float) -> float:
@@ -80,7 +91,9 @@ def compute_reward(ee_tracking_error: float) -> float:
     Returns:
     - reward: float. The computed reward based on the tracking error. Dimensionality: scalar
     """
-    raise NotImplementedError()
+    dense_reward = np.exp(-2 * ee_tracking_error)
+    sparse_reward = 1.0 if ee_tracking_error < 0.005 else 0.0
+    return dense_reward + sparse_reward
 
 
 def get_obs(qpos: np.ndarray, ee_pos_w: np.ndarray, ee_rot_w: np.ndarray, base_pos_w: np.ndarray, base_rot_w: np.ndarray, target_pos_w: np.ndarray) -> np.ndarray:
@@ -109,4 +122,15 @@ def get_obs(qpos: np.ndarray, ee_pos_w: np.ndarray, ee_rot_w: np.ndarray, base_p
 
     Hints: You can use the provided functions quat_mul, quat_conjugate, quat_normalize, rot_mat_to_quat for quaternion operations.
     """
-    raise NotImplementedError()
+    # World to base frame
+    ee_pos_base = base_rot_w.T @ (ee_pos_w - base_pos_w)
+    target_pos_base = base_rot_w.T @ (target_pos_w - base_pos_w)
+
+    # Endeffector quat in base frame
+    q_base_w = rot_mat_to_quat(base_rot_w)
+    q_ee_w = rot_mat_to_quat(ee_rot_w)
+    q_base_conj = quat_conjugate(q_base_w)
+    ee_quat_base = quat_normalize(quat_mul(q_base_conj, q_ee_w))
+
+    obs = np.concatenate([qpos, ee_pos_base, ee_quat_base, target_pos_base])
+    return obs

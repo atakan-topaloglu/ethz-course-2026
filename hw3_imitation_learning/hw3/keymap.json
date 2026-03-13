@@ -1,0 +1,128 @@
+{
+  "move_up": {
+    "raw": 65431,
+    "ascii": 151,
+    "label": "raw:65431",
+    "description": "Move EE up (+Z) (recommended: UP ARROW)"
+  },
+  "move_down": {
+    "raw": 65433,
+    "ascii": 153,
+    "label": "raw:65433",
+    "description": "Move EE down (-Z) (recommended: DOWN ARROW)"
+  },
+  "move_left": {
+    "raw": 65430,
+    "ascii": 150,
+    "label": "raw:65430",
+    "description": "Move EE left (-X) (recommended: LEFT ARROW)"
+  },
+  "move_right": {
+    "raw": 65432,
+    "ascii": 152,
+    "label": "raw:65432",
+    "description": "Move EE right (+X) (recommended: RIGHT ARROW)"
+  },
+  "move_forward": {
+    "raw": 65363,
+    "ascii": 83,
+    "label": "S",
+    "description": "Move EE forward (+Y) (recommended: W)"
+  },
+  "move_backward": {
+    "raw": 65361,
+    "ascii": 81,
+    "label": "Q",
+    "description": "Move EE backward (-Y) (recommended: S)"
+  },
+  "rot_x_pos": {
+    "raw": 65429,
+    "ascii": 149,
+    "label": "raw:65429",
+    "description": "Rotate EE +X axis"
+  },
+  "rot_x_neg": {
+    "raw": 65434,
+    "ascii": 154,
+    "label": "raw:65434",
+    "description": "Rotate EE -X axis"
+  },
+  "rot_y_pos": {
+    "raw": 65362,
+    "ascii": 82,
+    "label": "R",
+    "description": "Rotate EE +Y axis"
+  },
+  "rot_y_neg": {
+    "raw": 65364,
+    "ascii": 84,
+    "label": "T",
+    "description": "Rotate EE -Y axis"
+  },
+  "rot_z_pos": {
+    "raw": 65436,
+    "ascii": 156,
+    "label": "raw:65436",
+    "description": "Rotate EE +Z axis"
+  },
+  "rot_z_neg": {
+    "raw": 65435,
+    "ascii": 155,
+    "label": "raw:65435",
+    "description": "Rotate EE -Z axis"
+  },
+  "gripper_open": {
+    "raw": 111,
+    "ascii": 111,
+    "label": "o",
+    "description": "Open gripper (Jaw +)"
+  },
+  "gripper_close": {
+    "raw": 99,
+    "ascii": 99,
+    "label": "c",
+    "description": "Close gripper (Jaw -)"
+  },
+  "reset": {
+    "raw": 65509,
+    "ascii": 229,
+    "label": "raw:65509",
+    "description": "Reset environment (recommended: R)"
+  },
+  "record": {
+    "raw": 32,
+    "ascii": 32,
+    "label": " ",
+    "description": "Toggle recording on/off (recommended: Space)"
+  },
+  "end_episode": {
+    "raw": 13,
+    "ascii": 13,
+    "label": "raw:13",
+    "description": "End recorded episode (recommended: Enter)"
+  },
+  "escape": {
+    "raw": 27,
+    "ascii": 27,
+    "label": "raw:27",
+    "description": "Quit session (recommended: ESC)"
+  },
+  "goal_cube_red": {
+    "raw": 114,
+    "ascii": 114,
+    "label": "r",
+    "description": "Select RED cube as goal (multicube only)"
+  },
+  "goal_cube_green": {
+    "raw": 103,
+    "ascii": 103,
+    "label": "g",
+    "description": "Select GREEN cube as goal (multicube only)"
+  },
+  "goal_cube_blue": {
+    "raw": 98,
+    "ascii": 98,
+    "label": "b",
+    "description": "Select BLUE cube as goal (multicube only)"
+  }
+}

@@ -188,13 +188,15 @@ def main() -> None:
     )
 
     # ── model ─────────────────────────────────────────────────────────
+    hdim = args.hidden_dim if args.hidden_dim is not None else 256
+    nlay = args.n_layers if args.n_layers is not None else (4 if args.policy == "multitask" else 3)
     model = build_policy(
         args.policy,
         state_dim=states.shape[1],
         action_dim=actions.shape[1],
         chunk_size=args.chunk_size,
-        hidden_dim=args.hidden_dim,
-        n_layers=args.n_layers,
+        hidden_dim=hdim,
+        n_layers=nlay,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -256,8 +258,10 @@ def main() -> None:
                     "action_keys": args.action_keys,
                     "state_dim": int(states.shape[1]),
                     "action_dim": int(actions.shape[1]),
-                    "d_model": int(model.net[0].out_features),
-                    "depth": (len(model.net) - 1) // 2,
+                    "hidden_dim": hdim,
+                    "n_layers": nlay,
+                    "d_model": hdim,
+                    "depth": nlay,
                     "val_loss": val_loss,
                 },
                 save_path,

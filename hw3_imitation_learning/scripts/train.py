@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader, random_split
 import torch.optim as optim
 
 # TODO: Choose your own hyperparameters!
-EPOCHS = 100
+EPOCHS = 150
 BATCH_SIZE = 64
 LR = 1e-3
 VAL_SPLIT = 0.1
@@ -90,6 +90,13 @@ def main() -> None:
         "--zarr", type=Path, required=True, help="Path to processed .zarr store."
     )
     parser.add_argument(
+        "--extra-zarr",
+        type=Path,
+        nargs="*",
+        default=None,
+        help="Additional zarr paths to merge with --zarr (optional).",
+    )
+    parser.add_argument(
         "--policy",
         choices=["obstacle", "multitask"],
         default="obstacle",
@@ -98,8 +105,20 @@ def main() -> None:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=16,
-        help="Action chunk horizon H (default: 16).",
+        default=8,
+        help="Action chunk horizon H (default: 16). Use smaller (e.g. 8) for position-only ee_xyz.",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=None,
+        help="MLP hidden dimension (default: 256). Use smaller (e.g. 128) for simpler ee_xyz.",
+    )
+    parser.add_argument(
+        "--n-layers",
+        type=int,
+        default=None,
+        help="Number of MLP layers (default: 3). Use fewer (e.g. 2) for simpler ee_xyz.",
     )
     parser.add_argument(
         "--state-keys",
@@ -174,6 +193,8 @@ def main() -> None:
         state_dim=states.shape[1],
         action_dim=actions.shape[1],
         chunk_size=args.chunk_size,
+        hidden_dim=args.hidden_dim,
+        n_layers=args.n_layers,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -235,6 +256,8 @@ def main() -> None:
                     "action_keys": args.action_keys,
                     "state_dim": int(states.shape[1]),
                     "action_dim": int(actions.shape[1]),
+                    "d_model": int(model.net[0].out_features),
+                    "depth": (len(model.net) - 1) // 2,
                     "val_loss": val_loss,
                 },
                 save_path,

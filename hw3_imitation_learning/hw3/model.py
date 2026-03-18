@@ -44,8 +44,8 @@ class ObstaclePolicy(BasePolicy):
         self,
         state_dim: int,
         action_dim: int,
-        chunk_size: int = 16,
-        hidden_dim: int = 256,
+        chunk_size: int = 32,
+        hidden_dim: int = 128,
         n_layers: int = 3,
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
@@ -90,8 +90,8 @@ class MultiTaskPolicy(BasePolicy):
         self,
         state_dim: int,
         action_dim: int,
-        chunk_size: int = 16,
-        hidden_dim: int = 512,
+        chunk_size: int = 32,
+        hidden_dim: int = 256,
         n_layers: int = 4,
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
@@ -136,18 +136,28 @@ def build_policy(
     *,
     state_dim: int,
     action_dim: int,
-    chunk_size: int = 16,
+    chunk_size: int = 32,
+    d_model: int | None = None,
+    depth: int | None = None,
+    hidden_dim: int | None = None,
+    n_layers: int | None = None,
 ) -> BasePolicy:
+    hdim = hidden_dim if hidden_dim is not None else (d_model or 256)
+    nlay = n_layers if n_layers is not None else (depth or 3)
     if policy_type == "obstacle":
         return ObstaclePolicy(
             action_dim=action_dim,
             state_dim=state_dim,
             chunk_size=chunk_size,
+            hidden_dim=hdim,
+            n_layers=nlay,
         )
     if policy_type == "multitask":
         return MultiTaskPolicy(
             action_dim=action_dim,
             state_dim=state_dim,
             chunk_size=chunk_size,
+            hidden_dim=hdim,
+            n_layers=nlay,
         )
     raise ValueError(f"Unknown policy type: {policy_type}")

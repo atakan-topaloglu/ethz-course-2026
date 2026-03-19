@@ -40,9 +40,10 @@ def train_one_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-) -> float:
+) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
+    total_grad_norm_sq = 0.0
     n_batches = 0
 
     for batch in loader:
@@ -52,13 +53,22 @@ def train_one_epoch(
 
         optimizer.zero_grad()
         loss = model.compute_loss(states, action_chunks)
+        
         loss.backward()
+
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), max_norm=10.0  # Change float("inf") to 10.0 or 5.0
+        )
+        total_grad_norm_sq += grad_norm.item() ** 2
+
         optimizer.step()
 
         total_loss += loss.item()
         n_batches += 1
 
-    return total_loss / max(n_batches, 1)
+    avg_loss = total_loss / max(n_batches, 1)
+    avg_grad_norm = (total_grad_norm_sq / max(n_batches, 1)) ** 0.5
+    return avg_loss, avg_grad_norm
 
 
 @torch.no_grad()
@@ -234,7 +244,7 @@ def main() -> None:
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
+        train_loss, grad_norm = train_one_epoch(model, train_loader, optimizer, device)
         val_loss = evaluate(model, val_loader, device)
         scheduler.step()
 
@@ -270,7 +280,7 @@ def main() -> None:
 
         print(
             f"Epoch {epoch:3d}/{EPOCHS} | "
-            f"train {train_loss:.6f} | val {val_loss:.6f}{tag}"
+            f"train {train_loss:.6f} | val {val_loss:.6f} | grad_norm {grad_norm:.4f}{tag}"
         )
 
     print(f"\nBest val loss: {best_val:.6f}")

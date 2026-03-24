@@ -7,7 +7,6 @@ from typing import Literal, TypeAlias
 
 import torch
 from torch import nn
-from torch.distributions import Categorical, Normal, Independent, MixtureSameFamily
 
 
 class BasePolicy(nn.Module, metaclass=abc.ABCMeta):
@@ -35,11 +34,7 @@ class BasePolicy(nn.Module, metaclass=abc.ABCMeta):
 
 # TODO: Students implement ObstaclePolicy here.
 class ObstaclePolicy(BasePolicy):
-    """Predicts action chunks using a Mixture Density Network (MDN) and NLL.
-
-    Outputs parameters for a Gaussian Mixture Model (weights, means, and variances) 
-    to handle multi-modal action distributions.
-    """
+    """Predicts action chunks with an MSE loss."""
 
     def __init__(
         self,
@@ -48,82 +43,94 @@ class ObstaclePolicy(BasePolicy):
         chunk_size: int = 32,
         hidden_dim: int = 128,
         n_layers: int = 3,
-        dropout: float = 0.02,
-        num_mixtures: int = 2,  # Number of Gaussian components (K)
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
-        self.num_mixtures = num_mixtures
-        self.D = chunk_size * action_dim  # Total dimensions per component
         
         layers = []
         input_dim = state_dim
-        for _ in range(n_layers):
+        
+        for _ in range(n_layers - 1):
             layers.append(nn.Linear(input_dim, hidden_dim))
-            layers.append(nn.GELU())
+            layers.append(nn.ReLU())
             input_dim = hidden_dim
             
-        # Output dim = K weights + K*D means + K*D log_sigmas
-        out_dim = self.num_mixtures * (1 + 2 * self.D)
-        layers.append(nn.Linear(hidden_dim, out_dim))
+        layers.append(nn.Linear(hidden_dim, chunk_size * action_dim))
         
         self.net = nn.Sequential(*layers)
 
     def forward(
         self,
         state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return mixture weights, means, and sigmas."""
+    ) -> torch.Tensor:
+        """Return predicted action chunk of shape (B, chunk_size, action_dim)."""
         B = state.shape[0]
-        out = self.net(state)
-        
-        # 1. Mixture probabilities (logits)
-        pi_logits = out[:, :self.num_mixtures]
-        
-        # 2. Means (mu)
-        start_mu = self.num_mixtures
-        end_mu = self.num_mixtures + (self.num_mixtures * self.D)
-        mu = out[:, start_mu:end_mu].view(B, self.num_mixtures, self.chunk_size, self.action_dim)
-        
-        # 3. Standard Deviations (sigma)
-        log_sigma = out[:, end_mu:]
-        # Clamp log_sigma for numerical stability (prevents NaNs from 0 variance or explosions)
-        sigma = torch.exp(torch.clamp(log_sigma, min=-7.0, max=2.0))
-        sigma = sigma.view(B, self.num_mixtures, self.chunk_size, self.action_dim)
-        
-        return pi_logits, mu, sigma
+        flat_actions = self.net(state)
+        return flat_actions.view(B, self.chunk_size, self.action_dim)
 
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
-    ) -> torch.Tensor:            
-        pi_logits, mu, sigma = self.forward(state)
-        
-        # Construct the GMM distribution
-        mix = Categorical(logits=pi_logits)
-        # Event shape is 2D: (chunk_size, action_dim), so we use Independent(*, 2)
-        comp = Independent(Normal(mu, sigma), 2)
-        gmm = MixtureSameFamily(mix, comp)
-        
-        # Compute Negative Log-Likelihood (NLL)
-        log_probs = gmm.log_prob(action_chunk)
-        return -log_probs.mean()
+    ) -> torch.Tensor:
+        pred_actions = self(state)
+        return nn.functional.mse_loss(pred_actions, action_chunk)
 
     def sample_actions(
         self,
         state: torch.Tensor,
     ) -> torch.Tensor:
-        """Deterministically select the mean of the most probable Gaussian."""
-        pi_logits, mu, _ = self.forward(state)
+        self.eval()
+        with torch.no_grad():
+            return self(state)
+
+class MLPBlock(nn.Module):
+    """A single hidden block for the MLP, with optional residual mapping."""
+    def __init__(self, dim: int, dropout: float, skip: bool):
+        super().__init__()
+        self.skip = skip
+        self.transform = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.transform(x)
+        return x + out if self.skip else out
+
+
+class ResidualMLP(nn.Module):
+    """MLP with Residual Blocks and Dropout (used by MultiTaskPolicy)."""
+    
+    def __init__(
+        self, 
+        state_dim: int, 
+        action_dim: int,
+        chunk_size: int,
+        hidden_dim: int, 
+        n_layers: int, 
+        dropout: float = 0.05,
+        skip_connections: bool = True
+    ) -> None:
+        super().__init__()
+        self.chunk_size = chunk_size
+        self.action_dim = action_dim
         
-        # Find the index of the most likely component for each item in the batch
-        best_idx = torch.argmax(pi_logits, dim=-1)  # Shape: (B,)
+        self.in_proj = nn.Linear(state_dim, hidden_dim)
         
-        # Gather the means of the most likely components
-        B = state.shape[0]
-        best_mu = mu[torch.arange(B), best_idx]  # Shape: (B, chunk_size, action_dim)
+        self.blocks = nn.Sequential(*[
+            MLPBlock(hidden_dim, dropout, skip_connections) 
+            for _ in range(n_layers)
+        ])
         
-        return best_mu
+        self.out_proj = nn.Linear(hidden_dim, chunk_size * action_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.in_proj(x)
+        x = self.blocks(x)
+        x = self.out_proj(x)
+        
+        return x.view(-1, self.chunk_size, self.action_dim)
 
 
 # TODO: Students implement MultiTaskPolicy here.
@@ -188,9 +195,12 @@ def build_policy(
     depth: int | None = None,
     hidden_dim: int | None = None,
     n_layers: int | None = None,
+    state_mean: torch.Tensor | None = None,
+    state_std: torch.Tensor | None = None
 ) -> BasePolicy:
     hdim = hidden_dim if hidden_dim is not None else (d_model or 256)
     nlay = n_layers if n_layers is not None else (depth or 3)
+    
     if policy_type == "obstacle":
         return ObstaclePolicy(
             action_dim=action_dim,
@@ -200,11 +210,16 @@ def build_policy(
             n_layers=nlay,
         )
     if policy_type == "multitask":
+        # IMPORTANT:
+        # for MultiTaskPolicy, state_mean and state_std should not be left None but
+        # should be set to the actual values from the normalizer
         return MultiTaskPolicy(
             action_dim=action_dim,
             state_dim=state_dim,
             chunk_size=chunk_size,
             hidden_dim=hdim,
             n_layers=nlay,
+            state_mean=state_mean,
+            state_std=state_std
         )
     raise ValueError(f"Unknown policy type: {policy_type}")

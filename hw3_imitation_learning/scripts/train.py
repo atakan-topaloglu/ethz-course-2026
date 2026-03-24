@@ -24,15 +24,38 @@ from hw3.dataset import (
 )
 from hw3.model import BasePolicy, build_policy
 
-# TODO: Any imports you want from torch or other libraries we use. Not allowed: libraries we don't use
+
 from torch.utils.data import DataLoader, random_split
 import torch.optim as optim
 
-# TODO: Choose your own hyperparameters!
-EPOCHS = 150
-BATCH_SIZE = 64
-LR = 1e-3
-VAL_SPLIT = 0.1
+hyperparameters_ex1 = {
+    "epochs": 300,
+    "batch_size": 64,
+    "lr": 1e-4,
+    "val_split": 0.1,
+    "hidden_dim": 512,
+    "n_layers": 5,
+    "chunk_size": 32,
+}
+hyperparameters_ex2 = {
+    "epochs": 300,
+    "batch_size": 64,
+    "lr": 1e-4,
+    "val_split": 0.1,
+    "hidden_dim": 512,
+    "n_layers": 4,
+    "chunk_size": 16,
+}
+
+hyperparameters_ex3 = {
+    "epochs": 400,
+    "batch_size": 256,
+    "lr": 3e-4,
+    "val_split": 0.1,
+    "hidden_dim": 512,
+    "n_layers": 6,
+    "chunk_size": 16,
+}
 
 
 def train_one_epoch(
@@ -57,7 +80,7 @@ def train_one_epoch(
         loss.backward()
 
         grad_norm = torch.nn.utils.clip_grad_norm_(
-            model.parameters(), max_norm=10.0  # Change float("inf") to 10.0 or 5.0
+            model.parameters(), max_norm=float("inf") 
         )
         total_grad_norm_sq += grad_norm.item() ** 2
 
@@ -100,6 +123,12 @@ def main() -> None:
         "--zarr", type=Path, required=True, help="Path to processed .zarr store."
     )
     parser.add_argument(
+        "--exercise",
+        choices=["1", "2", "3"],
+        default="1",
+        help="Exercise number(1, 2 or 3, default: 1)",
+    )
+    parser.add_argument(
         "--extra-zarr",
         type=Path,
         nargs="*",
@@ -115,8 +144,8 @@ def main() -> None:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=8,
-        help="Action chunk horizon H (default: 16). Use smaller (e.g. 8) for position-only ee_xyz.",
+        default=None,
+        help="Action chunk horizon H (default: from exercise hyperparameters). Override per run if needed.",
     )
     parser.add_argument(
         "--hidden-dim",
@@ -149,6 +178,28 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     args = parser.parse_args()
 
+    match args.exercise:
+        case "1":
+            hp = hyperparameters_ex1
+        case "2":
+            hp = hyperparameters_ex2
+        case "3":
+            hp = hyperparameters_ex3
+        case _:
+            raise ValueError(f"Unknown exercise: {args.exercise}")
+
+    EPOCHS = hp["epochs"]
+    BATCH_SIZE = hp["batch_size"]
+    LR = hp["lr"]
+    VAL_SPLIT = hp["val_split"]
+    HDIM = hp["hidden_dim"]
+    NLAY = hp["n_layers"]
+    CHUNK = hp["chunk_size"]
+
+    hdim = args.hidden_dim if args.hidden_dim is not None else HDIM
+    nlay = args.n_layers if args.n_layers is not None else NLAY
+    chunk_size = args.chunk_size if args.chunk_size is not None else CHUNK
+
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -177,10 +228,10 @@ def main() -> None:
         states,
         actions,
         ep_ends,
-        chunk_size=args.chunk_size,
+        chunk_size=chunk_size,
         normalizer=normalizer,
     )
-    print(f"Dataset: {len(dataset)} samples, chunk_size={args.chunk_size}")
+    print(f"Dataset: {len(dataset)} samples, chunk_size={chunk_size}")
     print(f"  state_dim={states.shape[1]}, action_dim={actions.shape[1]}")
 
     # ── train / val split ─────────────────────────────────────────────
@@ -198,15 +249,15 @@ def main() -> None:
     )
 
     # ── model ─────────────────────────────────────────────────────────
-    hdim = args.hidden_dim if args.hidden_dim is not None else 256
-    nlay = args.n_layers if args.n_layers is not None else (4 if args.policy == "multitask" else 3)
     model = build_policy(
         args.policy,
         state_dim=states.shape[1],
         action_dim=actions.shape[1],
-        chunk_size=args.chunk_size,
+        chunk_size=chunk_size,
         hidden_dim=hdim,
         n_layers=nlay,
+        state_mean=torch.as_tensor(normalizer.state_mean),
+        state_std=torch.as_tensor(normalizer.state_std)
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -262,7 +313,7 @@ def main() -> None:
                         "action_mean": normalizer.action_mean,
                         "action_std": normalizer.action_std,
                     },
-                    "chunk_size": args.chunk_size,
+                    "chunk_size": chunk_size,
                     "policy_type": args.policy,
                     "state_keys": args.state_keys,
                     "action_keys": args.action_keys,

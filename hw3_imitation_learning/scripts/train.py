@@ -216,6 +216,13 @@ def main() -> None:
         action="store_true",
         help="Disable one-time [source-mix] sanity line at startup (numpy / duplicate batch sampler only).",
     )
+    parser.add_argument(
+        "--norm-prior-dof",
+        type=float,
+        default=4.0,
+        help="Empirical-Bayes pseudo-count for per-dim std (variance shrunk toward median "
+        "across dims). 0 = classical sample std.",
+    )
     args = parser.parse_args()
 
     match args.exercise:
@@ -267,7 +274,9 @@ def main() -> None:
             action_keys=args.action_keys,
         )
         ep_source = episode_source_labels_from_zarr_paths(zarr_paths)
-    normalizer = Normalizer.from_data(states, actions)
+    normalizer = Normalizer.from_data(
+        states, actions, prior_dof=float(args.norm_prior_dof)
+    )
 
     dataset = SO100ChunkDataset(
         states,

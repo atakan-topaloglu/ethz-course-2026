@@ -14,7 +14,15 @@ from torch.utils.data import Dataset, Sampler, WeightedRandomSampler
 
 @dataclass(frozen=True)
 class Normalizer:
-    """Feature-wise normalizer for states and actions."""
+    """Feature-wise normalizer for states and actions.
+
+    ``from_data`` estimates per-dimension means as the sample mean. Standard
+    deviations use an empirical-Bayes shrinkage estimator: each variance is
+    pulled toward the median across-dimension sample variance, equivalent to
+    a conjugate scaled-inverse-chi-square prior with ``prior_dof`` pseudo
+    observations. Set ``prior_dof=0`` to recover plain sample std (with a
+    small floor via ``_safe_std``).
+    """
 
     state_mean: np.ndarray
     state_std: np.ndarray
@@ -26,11 +34,58 @@ class Normalizer:
         return np.maximum(std, eps)
 
     @classmethod
-    def from_data(cls, states: np.ndarray, actions: np.ndarray) -> "Normalizer":
-        state_mean = states.mean(axis=0)
-        state_std = cls._safe_std(states.std(axis=0))
-        action_mean = actions.mean(axis=0)
-        action_std = cls._safe_std(actions.std(axis=0))
+    def _mean_and_bayesian_std(
+        cls,
+        x: np.ndarray,
+        *,
+        prior_dof: float,
+        eps: float = 1e-6,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sample mean and per-column std with optional EB variance shrinkage."""
+        n = int(x.shape[0])
+        mean = x.mean(axis=0)
+        if prior_dof <= 0.0:
+            if n <= 1:
+                std = cls._safe_std(np.zeros(x.shape[1], dtype=x.dtype), eps)
+            else:
+                std = cls._safe_std(x.std(axis=0, ddof=1), eps)
+            return mean, std
+
+        if n > 1:
+            sample_var = x.var(axis=0, ddof=1).astype(np.float64, copy=False)
+            sample_var = np.nan_to_num(sample_var, nan=0.0, posinf=0.0, neginf=0.0)
+        else:
+            sample_var = np.zeros(x.shape[1], dtype=np.float64)
+
+        dof = float(max(n - 1, 0))
+        positive = sample_var[sample_var > 1e-20]
+        if positive.size > 0:
+            v_prior = float(np.median(positive))
+        else:
+            v_prior = 1.0
+        if not np.isfinite(v_prior) or v_prior < 1e-20:
+            v_prior = 1.0
+
+        m = float(prior_dof)
+        post_var = (dof * sample_var + m * v_prior) / (dof + m)
+        post_var = np.maximum(post_var, 0.0)
+        std = cls._safe_std(np.sqrt(post_var), eps).astype(x.dtype, copy=False)
+        return mean, std
+
+    @classmethod
+    def from_data(
+        cls,
+        states: np.ndarray,
+        actions: np.ndarray,
+        *,
+        prior_dof: float = 4.0,
+    ) -> "Normalizer":
+        state_mean, state_std = cls._mean_and_bayesian_std(
+            states, prior_dof=prior_dof
+        )
+        action_mean, action_std = cls._mean_and_bayesian_std(
+            actions, prior_dof=prior_dof
+        )
         return cls(state_mean, state_std, action_mean, action_std)
 
     def normalize_state(self, state: np.ndarray) -> np.ndarray:

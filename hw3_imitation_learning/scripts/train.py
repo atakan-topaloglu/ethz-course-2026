@@ -100,7 +100,7 @@ hyperparameters_ex1 = {
     "lr": 1e-4,
     "val_split": 0.1,
     "hidden_dim": 512,
-    "n_layers": 5,
+    "n_layers": 4,
     "chunk_size": 16,
 }
 hyperparameters_ex2 = {
@@ -219,9 +219,10 @@ def main() -> None:
     parser.add_argument(
         "--norm-prior-dof",
         type=float,
-        default=4.0,
+        default=0.0,
         help="Empirical-Bayes pseudo-count for per-dim std (variance shrunk toward median "
-        "across dims). 0 = classical sample std.",
+        "across dims). Default 0 = original population std per column (no shrinkage). "
+        "Try e.g. 4 for mild shrinkage.",
     )
     args = parser.parse_args()
 

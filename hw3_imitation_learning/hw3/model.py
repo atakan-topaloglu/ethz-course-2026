@@ -157,7 +157,7 @@ class ResidualChunkBackbone(nn.Module):
         chunk_size: int,
         width: int,
         n_blocks: int,
-        dropout: float = 0.1,
+        dropout: float = 0.05,
         use_skip: bool = True,
     ) -> None:
         super().__init__()
@@ -178,8 +178,6 @@ class ResidualChunkBackbone(nn.Module):
 class MultiTaskPolicy(BasePolicy):
     """Goal-conditioned policy for the multicube scene."""
 
-    _COMPACT_DIM = 7
-
     def __init__(
         self,
         state_dim: int,
@@ -191,10 +189,18 @@ class MultiTaskPolicy(BasePolicy):
         state_std: torch.Tensor | None = None,
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
-        self.register_buffer("state_mean", state_mean)
-        self.register_buffer("state_std", state_std)
+        if state_mean is None:
+            mean_buf = torch.zeros(state_dim, dtype=torch.float32)
+        else:
+            mean_buf = torch.as_tensor(state_mean, dtype=torch.float32)
+        if state_std is None:
+            std_buf = torch.ones(state_dim, dtype=torch.float32)
+        else:
+            std_buf = torch.as_tensor(state_std, dtype=torch.float32)
+        self.register_buffer("state_mean", mean_buf)
+        self.register_buffer("state_std", std_buf)
         self.backbone = ResidualChunkBackbone(
-            in_features=self._COMPACT_DIM,
+            in_features=7, # grip (1) + vectocube (3) + vectogoal (3)
             action_dim=action_dim,
             chunk_size=chunk_size,
             width=hidden_dim,

@@ -20,8 +20,8 @@ class Normalizer:
     deviations use an empirical-Bayes shrinkage estimator: each variance is
     pulled toward the median across-dimension sample variance, equivalent to
     a conjugate scaled-inverse-chi-square prior with ``prior_dof`` pseudo
-    observations. Set ``prior_dof=0`` to recover plain sample std (with a
-    small floor via ``_safe_std``).
+    observations. Default ``prior_dof=0`` matches the original course baseline
+    (population std per column, ``ddof=0``). Set ``prior_dof>0`` to enable shrinkage.
     """
 
     state_mean: np.ndarray
@@ -48,7 +48,8 @@ class Normalizer:
             if n <= 1:
                 std = cls._safe_std(np.zeros(x.shape[1], dtype=x.dtype), eps)
             else:
-                std = cls._safe_std(x.std(axis=0, ddof=1), eps)
+                # Match historical Normalizer: numpy default ddof=0 (population std).
+                std = cls._safe_std(x.std(axis=0, ddof=0), eps)
             return mean, std
 
         if n > 1:
@@ -78,7 +79,7 @@ class Normalizer:
         states: np.ndarray,
         actions: np.ndarray,
         *,
-        prior_dof: float = 4.0,
+        prior_dof: float = 0.0,
     ) -> "Normalizer":
         state_mean, state_std = cls._mean_and_bayesian_std(
             states, prior_dof=prior_dof

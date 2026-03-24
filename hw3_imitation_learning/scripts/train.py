@@ -14,13 +14,20 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 import zarr as zarr_lib
 from hw3.dataset import (
     Normalizer,
     SO100ChunkDataset,
+    build_train_source_mix_sampler,
+    chunk_dagger_recency_multipliers,
+    chunk_source_from_episodes,
+    episode_source_labels_from_processed_zarr,
+    episode_source_labels_from_zarr_paths,
     load_and_merge_zarrs,
     load_zarr,
+    log_source_mix_sanity,
 )
 from hw3.model import BasePolicy, build_policy
 
@@ -176,6 +183,36 @@ def main() -> None:
         "If omitted, uses the action_key attribute from the zarr metadata.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument(
+        "--source-mix",
+        choices=["uniform", "weighted", "batch_split"],
+        default="uniform",
+        help="Train-time mixing of teleop vs DAgger chunk samples. "
+        "'uniform' = default DataLoader shuffle. "
+        "'weighted' = WeightedRandomSampler toward --dagger-fraction. "
+        "'batch_split' = each batch has round(batch*dagger_fraction) DAgger rows. "
+        "Requires DAgger episodes (path contains 'dagger' or processed zarr source_zarrs).",
+    )
+    parser.add_argument(
+        "--dagger-fraction",
+        type=float,
+        default=0.5,
+        help="Target fraction of DAgger chunks when using weighted or batch_split (0–1).",
+    )
+    parser.add_argument(
+        "--dagger-latest-boost",
+        type=float,
+        default=1.0,
+        help="Within the DAgger pool, upweight newer episodes (dataset / merge order): "
+        "oldest DAgger ep multiplier 1.0, newest *boost*. Values <=1 disable. "
+        "DAgger chunk weights are mean-normalized so teleop vs DAgger rate still follows "
+        "--dagger-fraction. Example: 3.0 with 13 DAgger episodes → linear ramp 1→3.",
+    )
+    parser.add_argument(
+        "--no-log-mix-verify",
+        action="store_true",
+        help="Disable one-time [source-mix] sanity line at startup (numpy / duplicate batch sampler only).",
+    )
     args = parser.parse_args()
 
     match args.exercise:
@@ -215,6 +252,10 @@ def main() -> None:
             state_keys=args.state_keys,
             action_keys=args.action_keys,
         )
+        n_ep = int(np.asarray(ep_ends).size)
+        ep_source = episode_source_labels_from_processed_zarr(args.zarr, n_ep)
+        if ep_source is None:
+            ep_source = np.zeros(n_ep, dtype=np.int64)
     else:
         print(f"Merging {len(zarr_paths)} zarr stores: {[str(p) for p in zarr_paths]}")
         states, actions, ep_ends = load_and_merge_zarrs(
@@ -222,6 +263,7 @@ def main() -> None:
             state_keys=args.state_keys,
             action_keys=args.action_keys,
         )
+        ep_source = episode_source_labels_from_zarr_paths(zarr_paths)
     normalizer = Normalizer.from_data(states, actions)
 
     dataset = SO100ChunkDataset(
@@ -231,8 +273,21 @@ def main() -> None:
         chunk_size=chunk_size,
         normalizer=normalizer,
     )
+    chunk_source_full = chunk_source_from_episodes(
+        ep_ends, dataset.indices, ep_source
+    )
+    latest_boost = max(1.0, float(args.dagger_latest_boost))
+    chunk_recency_full = chunk_dagger_recency_multipliers(
+        ep_ends, dataset.indices, ep_source, latest_boost
+    )
+    n_dag_eps = int(ep_source.sum())
+    n_tel_eps = int(ep_source.size - n_dag_eps)
     print(f"Dataset: {len(dataset)} samples, chunk_size={chunk_size}")
     print(f"  state_dim={states.shape[1]}, action_dim={actions.shape[1]}")
+    print(
+        f"  episodes: {ep_source.size} total ({n_tel_eps} teleop, {n_dag_eps} DAgger); "
+        f"chunk labels: {(chunk_source_full == 0).sum()} teleop / {(chunk_source_full == 1).sum()} DAgger"
+    )
 
     # ── train / val split ─────────────────────────────────────────────
     n_val = max(1, int(len(dataset) * VAL_SPLIT))
@@ -241,12 +296,58 @@ def main() -> None:
         dataset, [n_train, n_val], generator=torch.Generator().manual_seed(args.seed)
     )
 
-    train_loader = DataLoader(
-        train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0
+    train_idx = np.asarray(train_ds.indices, dtype=np.int64)
+    train_chunk_source = chunk_source_full[train_idx]
+    train_recency = chunk_recency_full[train_idx].astype(np.float64, copy=False)
+    train_recency_for_mix = (
+        train_recency if float(args.dagger_latest_boost) > 1.0 else None
     )
+    mix_gen = torch.Generator().manual_seed(args.seed)
+    mix_sampler = build_train_source_mix_sampler(
+        train_chunk_source,
+        mode=args.source_mix,
+        dagger_fraction=float(args.dagger_fraction),
+        batch_size=BATCH_SIZE,
+        generator=mix_gen,
+        dagger_recency_mult_train=train_recency_for_mix,
+    )
+    if args.source_mix != "uniform" and mix_sampler is None:
+        print(
+            f"  source-mix={args.source_mix!r} unavailable (no mixed train chunks); "
+            "using uniform shuffle."
+        )
+
+    if mix_sampler is None:
+        train_loader = DataLoader(
+            train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0
+        )
+    elif args.source_mix == "weighted":
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=BATCH_SIZE,
+            sampler=mix_sampler,
+            shuffle=False,
+            num_workers=0,
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds, batch_sampler=mix_sampler, num_workers=0
+        )
     val_loader = DataLoader(
         val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0
     )
+
+    if not args.no_log_mix_verify:
+        effective_mix = "uniform" if mix_sampler is None else args.source_mix
+        log_source_mix_sanity(
+            train_chunk_source,
+            mode=effective_mix,
+            dagger_fraction=float(args.dagger_fraction),
+            batch_size=BATCH_SIZE,
+            verify_seed=args.seed + 1_000_003,
+            dagger_recency_mult_train=train_recency_for_mix,
+            dagger_latest_boost=float(args.dagger_latest_boost),
+        )
 
     # ── model ─────────────────────────────────────────────────────────
     model = build_policy(

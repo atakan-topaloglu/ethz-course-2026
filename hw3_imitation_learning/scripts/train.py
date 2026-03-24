@@ -35,7 +35,7 @@ hyperparameters_ex1 = {
     "val_split": 0.1,
     "hidden_dim": 512,
     "n_layers": 5,
-    "chunk_size": 32,
+    "chunk_size": 16,
 }
 hyperparameters_ex2 = {
     "epochs": 300,

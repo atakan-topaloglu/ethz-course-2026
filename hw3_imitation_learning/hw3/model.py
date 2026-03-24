@@ -45,17 +45,17 @@ class ObstaclePolicy(BasePolicy):
         n_layers: int = 3,
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
-        
+
         layers = []
         input_dim = state_dim
-        
+
         for _ in range(n_layers - 1):
             layers.append(nn.Linear(input_dim, hidden_dim))
             layers.append(nn.ReLU())
             input_dim = hidden_dim
-            
+
         layers.append(nn.Linear(hidden_dim, chunk_size * action_dim))
-        
+
         self.net = nn.Sequential(*layers)
 
     def forward(
@@ -83,59 +83,102 @@ class ObstaclePolicy(BasePolicy):
         with torch.no_grad():
             return self(state)
 
-class MLPBlock(nn.Module):
-    """A single hidden block for the MLP, with optional residual mapping."""
-    def __init__(self, dim: int, dropout: float, skip: bool):
+
+class FeatureStem(nn.Module):
+    """Linear map from input features to the trunk hidden width."""
+
+    def __init__(self, in_features: int, width: int) -> None:
         super().__init__()
-        self.skip = skip
-        self.transform = nn.Sequential(
-            nn.Linear(dim, dim),
+        self.linear = nn.Linear(in_features, width)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x)
+
+
+class ResidualWidthBlock(nn.Module):
+    """Width-preserving MLP block used as a residual delta."""
+
+    def __init__(self, width: int, dropout: float) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(width, width),
             nn.ReLU(),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.transform(x)
-        return x + out if self.skip else out
+        return self.net(x)
 
 
-class ResidualMLP(nn.Module):
-    """MLP with Residual Blocks and Dropout (used by MultiTaskPolicy)."""
-    
+class ResidualFeatureStack(nn.Module):
+    """Stack of width blocks with optional residual connections."""
+
     def __init__(
-        self, 
-        state_dim: int, 
-        action_dim: int,
-        chunk_size: int,
-        hidden_dim: int, 
-        n_layers: int, 
-        dropout: float = 0.05,
-        skip_connections: bool = True
+        self,
+        width: int,
+        n_blocks: int,
+        dropout: float,
+        use_skip: bool = True,
     ) -> None:
+        super().__init__()
+        self.use_skip = use_skip
+        self.blocks = nn.ModuleList(
+            ResidualWidthBlock(width, dropout) for _ in range(n_blocks)
+        )
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        for block in self.blocks:
+            delta = block(h)
+            h = h + delta if self.use_skip else delta
+        return h
+
+
+class ActionChunkHead(nn.Module):
+    """Maps trunk features to an action chunk (B, chunk_size, action_dim)."""
+
+    def __init__(self, width: int, chunk_size: int, action_dim: int) -> None:
         super().__init__()
         self.chunk_size = chunk_size
         self.action_dim = action_dim
-        
-        self.in_proj = nn.Linear(state_dim, hidden_dim)
-        
-        self.blocks = nn.Sequential(*[
-            MLPBlock(hidden_dim, dropout, skip_connections) 
-            for _ in range(n_layers)
-        ])
-        
-        self.out_proj = nn.Linear(hidden_dim, chunk_size * action_dim)
+        self.linear = nn.Linear(width, chunk_size * action_dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.in_proj(x)
-        x = self.blocks(x)
-        x = self.out_proj(x)
-        
-        return x.view(-1, self.chunk_size, self.action_dim)
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        flat = self.linear(h)
+        return flat.view(-1, self.chunk_size, self.action_dim)
 
 
-# TODO: Students implement MultiTaskPolicy here.
+class ResidualChunkBackbone(nn.Module):
+    """Stem → residual width stack → chunk head (multitask policy trunk)."""
+
+    def __init__(
+        self,
+        in_features: int,
+        action_dim: int,
+        chunk_size: int,
+        width: int,
+        n_blocks: int,
+        dropout: float = 0.1,
+        use_skip: bool = True,
+    ) -> None:
+        super().__init__()
+        self.action_dim = action_dim
+        self.chunk_size = chunk_size
+        self.stem = FeatureStem(in_features, width)
+        self.trunk = ResidualFeatureStack(
+            width, n_blocks, dropout, use_skip=use_skip
+        )
+        self.head = ActionChunkHead(width, chunk_size, action_dim)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        h = self.stem(features)
+        h = self.trunk(h)
+        return self.head(h)
+
+
 class MultiTaskPolicy(BasePolicy):
     """Goal-conditioned policy for the multicube scene."""
+
+    _COMPACT_DIM = 7
 
     def __init__(
         self,
@@ -144,42 +187,56 @@ class MultiTaskPolicy(BasePolicy):
         chunk_size: int = 32,
         hidden_dim: int = 256,
         n_layers: int = 4,
-        dropout: float = 0.02,
+        state_mean: torch.Tensor | None = None,
+        state_std: torch.Tensor | None = None,
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
-        layers = []
-        input_dim = state_dim
-        for _ in range(n_layers):
-            layers.append(nn.Linear(input_dim, hidden_dim))
-            # layers.append(nn.LayerNorm(hidden_dim))
-            layers.append(nn.GELU())
-            layers.append(nn.Dropout(dropout))
-            input_dim = hidden_dim
-        layers.append(nn.Linear(hidden_dim, chunk_size * action_dim))
-        self.net = nn.Sequential(*layers)
+        self.register_buffer("state_mean", state_mean)
+        self.register_buffer("state_std", state_std)
+        self.backbone = ResidualChunkBackbone(
+            in_features=self._COMPACT_DIM,
+            action_dim=action_dim,
+            chunk_size=chunk_size,
+            width=hidden_dim,
+            n_blocks=n_layers,
+            dropout=0.1,
+            use_skip=True,
+        )
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Return predicted action chunk of shape (B, chunk_size, action_dim)."""
+        batch = state.shape[0]
+        grip = state[:, 3:4]
+
+        physical = state * self.state_std + self.state_mean
+        goal_scores = physical[:, 13:16]
+        goal_sel = torch.argmax(goal_scores, dim=1)
+        goal_one_hot = nn.functional.one_hot(goal_sel, num_classes=3).float()
+        ee = physical[:, :3]
+        goal_xyz = physical[:, 16:19]
+        stacked = physical[:, 4:13].view(batch, 3, 3)
+        weights = goal_one_hot.unsqueeze(-1)
+        focused_cube = (stacked * weights).sum(dim=1)
+        vec_to_cube = focused_cube - ee
+        vec_to_goal = goal_xyz - ee
+        features = torch.cat([grip, vec_to_cube, vec_to_goal], dim=1)
+        return self.backbone(features)
 
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        pred_actions = self(state)
-        return nn.functional.mse_loss(pred_actions, action_chunk)
+        pred = self.forward(state)
+        return nn.functional.mse_loss(pred, action_chunk)
 
     def sample_actions(
         self,
         state: torch.Tensor,
     ) -> torch.Tensor:
-        return self(state)
-
-    def forward(
-        self,
-        state: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return predicted action chunk of shape (B, chunk_size, action_dim)."""
-        B = state.shape[0]
-        flat_actions = self.net(state)
-        return flat_actions.view(B, self.chunk_size, self.action_dim)
+        self.eval()
+        with torch.no_grad():
+            return self.forward(state)
 
 
 PolicyType: TypeAlias = Literal["obstacle", "multitask"]
@@ -196,11 +253,11 @@ def build_policy(
     hidden_dim: int | None = None,
     n_layers: int | None = None,
     state_mean: torch.Tensor | None = None,
-    state_std: torch.Tensor | None = None
+    state_std: torch.Tensor | None = None,
 ) -> BasePolicy:
     hdim = hidden_dim if hidden_dim is not None else (d_model or 256)
     nlay = n_layers if n_layers is not None else (depth or 3)
-    
+
     if policy_type == "obstacle":
         return ObstaclePolicy(
             action_dim=action_dim,
@@ -210,9 +267,6 @@ def build_policy(
             n_layers=nlay,
         )
     if policy_type == "multitask":
-        # IMPORTANT:
-        # for MultiTaskPolicy, state_mean and state_std should not be left None but
-        # should be set to the actual values from the normalizer
         return MultiTaskPolicy(
             action_dim=action_dim,
             state_dim=state_dim,
@@ -220,6 +274,6 @@ def build_policy(
             hidden_dim=hdim,
             n_layers=nlay,
             state_mean=state_mean,
-            state_std=state_std
+            state_std=state_std,
         )
     raise ValueError(f"Unknown policy type: {policy_type}")

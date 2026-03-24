@@ -35,35 +35,6 @@ from hw3.model import BasePolicy, build_policy
 from torch.utils.data import DataLoader, random_split
 import torch.optim as optim
 
-hyperparameters_ex1 = {
-    "epochs": 300,
-    "batch_size": 64,
-    "lr": 1e-4,
-    "val_split": 0.1,
-    "hidden_dim": 512,
-    "n_layers": 5,
-    "chunk_size": 16,
-}
-hyperparameters_ex2 = {
-    "epochs": 300,
-    "batch_size": 64,
-    "lr": 1e-4,
-    "val_split": 0.1,
-    "hidden_dim": 512,
-    "n_layers": 4,
-    "chunk_size": 16,
-}
-
-hyperparameters_ex3 = {
-    "epochs": 400,
-    "batch_size": 256,
-    "lr": 3e-4,
-    "val_split": 0.1,
-    "hidden_dim": 512,
-    "n_layers": 6,
-    "chunk_size": 16,
-}
-
 
 def train_one_epoch(
     model: BasePolicy,
@@ -123,6 +94,35 @@ def evaluate(
     return total_loss / max(n_batches, 1)
 
 
+hyperparameters_ex1 = {
+    "epochs": 300,
+    "batch_size": 64,
+    "lr": 1e-4,
+    "val_split": 0.1,
+    "hidden_dim": 512,
+    "n_layers": 5,
+    "chunk_size": 16,
+}
+hyperparameters_ex2 = {
+    "epochs": 300,
+    "batch_size": 64,
+    "lr": 1e-4,
+    "val_split": 0.1,
+    "hidden_dim": 512,
+    "n_layers": 5,
+    "chunk_size": 16,
+}
+
+hyperparameters_ex3 = {
+    "epochs": 300,
+    "batch_size": 128,
+    "lr": 2e-4,
+    "val_split": 0.1,
+    "hidden_dim": 512,
+    "n_layers": 6,
+    "chunk_size": 16,
+}
+
 def main() -> None:
     # TODO: You may add any cli arguments that make life easier for you like learning rate etc.
     parser = argparse.ArgumentParser(description="Train action-chunking policy.")
@@ -146,7 +146,10 @@ def main() -> None:
         "--policy",
         choices=["obstacle", "multitask"],
         default="obstacle",
-        help="Policy type: 'obstacle' for single-cube obstacle scene, 'multitask' for multicube (default: obstacle).",
+        help="Policy type: 'obstacle' (single-cube) or 'multitask' (multicube). "
+        "Multitask needs --state-keys in order: state_ee_xyz state_gripper "
+        '"original_pos_cube_red[:3]" "original_pos_cube_green[:3]" "original_pos_cube_blue[:3]" '
+        "state_goal goal_pos (see hw3.model.MultiTaskPolicy).",
     )
     parser.add_argument(
         "--chunk-size",
